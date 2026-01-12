@@ -1,0 +1,428 @@
+#!/usr/bin/env python3
+"""
+SALOCOIN Wallet CLI
+Usage: salocoin-wallet <command> [options]
+"""
+
+import sys
+import os
+import argparse
+import json
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import config
+from core.wallet import Wallet
+from core.blockchain import Blockchain
+from core.transaction import Transaction, TxInput, TxOutput
+
+# Directories
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+WALLETS_DIR = os.path.join(BASE_DIR, 'wallets')
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+BACKUP_DIR = os.path.join(BASE_DIR, 'backups')
+
+os.makedirs(WALLETS_DIR, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(BACKUP_DIR, exist_ok=True)
+
+SALO = config.COIN_UNIT
+
+
+def get_wallet_path(name: str) -> str:
+    return os.path.join(WALLETS_DIR, f'{name}.json')
+
+
+def load_wallet(name: str) -> Wallet:
+    path = get_wallet_path(name)
+    if not os.path.exists(path):
+        print(f"Error: Wallet '{name}' not found")
+        print(f"Create with: salocoin-wallet create {name}")
+        sys.exit(1)
+    wallet = Wallet(filepath=path)
+    wallet.load()
+    return wallet
+
+
+def load_blockchain() -> Blockchain:
+    blockchain = Blockchain(data_dir=DATA_DIR)
+    blockchain.load()
+    
+    # Validate genesis on first use
+    if not blockchain.validate_genesis():
+        print("❌ INVALID GENESIS BLOCK!")
+        print("   Delete data/ folder and sync from seed node.")
+        sys.exit(1)
+    
+    return blockchain
+
+
+def get_balance(wallet: Wallet, blockchain: Blockchain) -> int:
+    """Get wallet balance in satoshis."""
+    addresses = [a.address for a in wallet.addresses]
+    
+    spent = set()
+    for block in blockchain.chain:
+        for tx_data in block.transactions:
+            tx = Transaction.from_dict(tx_data) if isinstance(tx_data, dict) else tx_data
+            for inp in tx.inputs:
+                if inp.txid != '0' * 64:
+                    spent.add((inp.txid, inp.vout))
+    
+    balance = 0
+    for block in blockchain.chain:
+        for tx_data in block.transactions:
+            tx = Transaction.from_dict(tx_data) if isinstance(tx_data, dict) else tx_data
+            for vout, output in enumerate(tx.outputs):
+                if output.address in addresses and (tx.txid, vout) not in spent:
+                    balance += output.value
+    
+    return balance
+
+
+def get_utxos(wallet: Wallet, blockchain: Blockchain) -> list:
+    """Get unspent transaction outputs for wallet."""
+    addresses = [a.address for a in wallet.addresses]
+    
+    spent = set()
+    for block in blockchain.chain:
+        for tx_data in block.transactions:
+            tx = Transaction.from_dict(tx_data) if isinstance(tx_data, dict) else tx_data
+            for inp in tx.inputs:
+                if inp.txid != '0' * 64:
+                    spent.add((inp.txid, inp.vout))
+    
+    utxos = []
+    for block in blockchain.chain:
+        for tx_data in block.transactions:
+            tx = Transaction.from_dict(tx_data) if isinstance(tx_data, dict) else tx_data
+            for vout, output in enumerate(tx.outputs):
+                if output.address in addresses and (tx.txid, vout) not in spent:
+                    utxos.append({
+                        'txid': tx.txid,
+                        'vout': vout,
+                        'value': output.value,
+                        'address': output.address,
+                    })
+    
+    return utxos
+
+
+# ============================================================================
+# COMMANDS
+# ============================================================================
+
+def cmd_create(args):
+    """Create a new wallet."""
+    name = args.name
+    path = get_wallet_path(name)
+    
+    if os.path.exists(path):
+        print(f"Error: Wallet '{name}' already exists")
+        sys.exit(1)
+    
+    wallet = Wallet(filepath=path, name=name)
+    mnemonic = wallet.create_hd_wallet()
+    wallet.save()
+    
+    print(f"""
+╔══════════════════════════════════════════════════════════╗
+║              SALOCOIN Wallet Created                     ║
+╚══════════════════════════════════════════════════════════╝
+
+Wallet Name: {name}
+Address: {wallet.addresses[0].address}
+
+⚠️  BACKUP YOUR RECOVERY PHRASE - THIS IS THE ONLY WAY TO RECOVER YOUR WALLET!
+════════════════════════════════════════════════════════════
+
+{mnemonic}
+
+════════════════════════════════════════════════════════════
+""")
+
+
+def cmd_list(args):
+    """List all wallets."""
+    wallets = [f[:-5] for f in os.listdir(WALLETS_DIR) if f.endswith('.json')]
+    
+    if not wallets:
+        print("No wallets found. Create one with: salocoin-wallet create <name>")
+        return
+    
+    print("\n📁 Wallets:")
+    print("─" * 50)
+    for name in wallets:
+        wallet = load_wallet(name)
+        print(f"  {name}: {wallet.addresses[0].address}")
+    print()
+
+
+def cmd_balance(args):
+    """Show wallet balance."""
+    wallet = load_wallet(args.name)
+    blockchain = load_blockchain()
+    balance = get_balance(wallet, blockchain)
+    
+    print(f"\n💰 Wallet: {args.name}")
+    print(f"   Address: {wallet.addresses[0].address}")
+    print(f"   Balance: {balance / SALO} SALO\n")
+
+
+def cmd_address(args):
+    """Address management."""
+    wallet = load_wallet(args.name)
+    
+    if args.address_cmd == 'new':
+        label = args.label or f"Address #{len(wallet.addresses)}"
+        addr = wallet.create_address(label)
+        wallet.save()
+        print(f"\n✓ New address created: {addr.address}\n")
+    
+    elif args.address_cmd == 'list':
+        print(f"\n📬 Addresses for wallet '{args.name}':")
+        print("─" * 60)
+        for i, addr in enumerate(wallet.addresses):
+            print(f"  [{i}] {addr.address}")
+            if addr.label:
+                print(f"      Label: {addr.label}")
+        print()
+
+
+def cmd_send(args):
+    """Send SALO to an address."""
+    wallet = load_wallet(args.name)
+    blockchain = load_blockchain()
+    
+    to_address = args.to_address
+    amount = int(float(args.amount) * SALO)
+    fee = config.DEFAULT_TX_FEE
+    
+    # Check balance
+    balance = get_balance(wallet, blockchain)
+    if balance < amount + fee:
+        print(f"Error: Insufficient balance")
+        print(f"  Available: {balance / SALO} SALO")
+        print(f"  Required: {(amount + fee) / SALO} SALO (including fee)")
+        sys.exit(1)
+    
+    # Get UTXOs
+    utxos = get_utxos(wallet, blockchain)
+    
+    # Select UTXOs for transaction
+    selected = []
+    total = 0
+    for utxo in utxos:
+        selected.append(utxo)
+        total += utxo['value']
+        if total >= amount + fee:
+            break
+    
+    change = total - amount - fee
+    
+    # Create transaction
+    inputs = []
+    for utxo in selected:
+        inputs.append(TxInput(
+            txid=utxo['txid'],
+            vout=utxo['vout'],
+            script_sig=b'',
+            sequence=0xffffffff,
+        ))
+    
+    outputs = [TxOutput(value=amount, script_pubkey=b'', address=to_address)]
+    if change > 0:
+        outputs.append(TxOutput(value=change, script_pubkey=b'', address=wallet.addresses[0].address))
+    
+    tx = Transaction(version=1, inputs=inputs, outputs=outputs, locktime=0)
+    
+    # Sign inputs
+    for i, utxo in enumerate(selected):
+        addr = wallet.get_address(utxo['address'])
+        tx.sign_input(i, addr.private_key, addr.public_key)
+    
+    # Add to mempool and save
+    blockchain.mempool.add_transaction(tx)
+    blockchain.save()  # Persist mempool to disk
+    
+    # Submit to seed node
+    try:
+        from sync import BlockchainSync
+        sync = BlockchainSync(blockchain)
+        sync.submit_transaction(tx)
+    except Exception as e:
+        print(f"⚠ Could not sync to seed node: {e}")
+    
+    print(f"""
+╔══════════════════════════════════════════════════════════╗
+║              Transaction Created                         ║
+╚══════════════════════════════════════════════════════════╝
+
+TXID: {tx.txid}
+From: {wallet.addresses[0].address}
+To: {to_address}
+Amount: {amount / SALO} SALO
+Fee: {fee / SALO} SALO
+
+✓ Transaction submitted to seed node and local mempool.
+⏳ Mine a block to confirm.
+""")
+
+
+def cmd_history(args):
+    """Show transaction history."""
+    wallet = load_wallet(args.name)
+    blockchain = load_blockchain()
+    addresses = [a.address for a in wallet.addresses]
+    
+    print(f"\n📜 Transaction History for '{args.name}':")
+    print("─" * 70)
+    
+    for block in blockchain.chain:
+        for tx_data in block.transactions:
+            tx = Transaction.from_dict(tx_data) if isinstance(tx_data, dict) else tx_data
+            
+            # Check if this tx involves our wallet
+            involved = False
+            received = 0
+            sent = 0
+            
+            for output in tx.outputs:
+                if output.address in addresses:
+                    received += output.value
+                    involved = True
+            
+            if involved:
+                tx_type = "⬇️ RECEIVED" if received > 0 else "⬆️ SENT"
+                print(f"  Block {block.height} | {tx.txid[:16]}... | {tx_type} {received / SALO} SALO")
+    
+    print()
+
+
+def cmd_receive(args):
+    """Show receive address."""
+    wallet = load_wallet(args.name)
+    
+    print(f"""
+╔══════════════════════════════════════════════════════════╗
+║              Receive SALO                                ║
+╚══════════════════════════════════════════════════════════╝
+
+Your Address: {wallet.addresses[0].address}
+
+Share this address to receive SALO.
+""")
+
+
+def cmd_backup(args):
+    """Backup wallet."""
+    wallet = load_wallet(args.name)
+    
+    backup_file = os.path.join(BACKUP_DIR, f'{args.name}_backup_{int(time.time())}.json')
+    
+    with open(get_wallet_path(args.name), 'r') as src:
+        with open(backup_file, 'w') as dst:
+            dst.write(src.read())
+    
+    print(f"""
+✓ Wallet backed up to: {backup_file}
+
+Recovery Phrase:
+════════════════════════════════════════════════════════════
+{wallet.mnemonic}
+════════════════════════════════════════════════════════════
+""")
+
+
+def cmd_restore(args):
+    """Restore wallet from mnemonic."""
+    name = args.name
+    path = get_wallet_path(name)
+    
+    if os.path.exists(path):
+        print(f"Error: Wallet '{name}' already exists")
+        sys.exit(1)
+    
+    print("Enter your 24-word recovery phrase:")
+    mnemonic = input("> ").strip()
+    
+    wallet = Wallet(filepath=path, name=name)
+    wallet.create_hd_wallet(mnemonic=mnemonic)
+    wallet.save()
+    
+    print(f"""
+✓ Wallet restored successfully!
+Address: {wallet.addresses[0].address}
+""")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='salocoin-wallet',
+        description='SALOCOIN Wallet Manager'
+    )
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+    
+    # create
+    p = subparsers.add_parser('create', help='Create new wallet')
+    p.add_argument('name', help='Wallet name')
+    
+    # list
+    subparsers.add_parser('list', help='List all wallets')
+    
+    # balance
+    p = subparsers.add_parser('balance', help='Show wallet balance')
+    p.add_argument('name', nargs='?', default='default', help='Wallet name')
+    
+    # address
+    p = subparsers.add_parser('address', help='Address management')
+    p.add_argument('address_cmd', choices=['new', 'list'], help='Address command')
+    p.add_argument('--name', '-n', default='default', help='Wallet name')
+    p.add_argument('--label', '-l', default='', help='Address label')
+    
+    # send
+    p = subparsers.add_parser('send', help='Send SALO')
+    p.add_argument('to_address', help='Destination address')
+    p.add_argument('amount', help='Amount in SALO')
+    p.add_argument('--name', '-n', default='default', help='Wallet name')
+    
+    # history
+    p = subparsers.add_parser('history', help='Transaction history')
+    p.add_argument('name', nargs='?', default='default', help='Wallet name')
+    
+    # receive
+    p = subparsers.add_parser('receive', help='Show receive address')
+    p.add_argument('name', nargs='?', default='default', help='Wallet name')
+    
+    # backup
+    p = subparsers.add_parser('backup', help='Backup wallet')
+    p.add_argument('name', nargs='?', default='default', help='Wallet name')
+    
+    # restore
+    p = subparsers.add_parser('restore', help='Restore wallet from mnemonic')
+    p.add_argument('name', help='Wallet name')
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+    
+    commands = {
+        'create': cmd_create,
+        'list': cmd_list,
+        'balance': cmd_balance,
+        'address': cmd_address,
+        'send': cmd_send,
+        'history': cmd_history,
+        'receive': cmd_receive,
+        'backup': cmd_backup,
+        'restore': cmd_restore,
+    }
+    
+    commands[args.command](args)
+
+
+if __name__ == '__main__':
+    main()

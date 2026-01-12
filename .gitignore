@@ -1,0 +1,126 @@
+# ===========================================
+# SALOCOIN - Open Source Cryptocurrency
+# .gitignore for clean open source release
+# ===========================================
+
+# ------------------------------------------
+# Python bytecode and compiled files
+# ------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# ------------------------------------------
+# Virtual environments
+# ------------------------------------------
+.env
+.venv/
+venv/
+env/
+ENV/
+
+# ------------------------------------------
+# Build and distribution
+# ------------------------------------------
+build/
+dist/
+*.egg-info/
+*.egg
+*.manifest
+*.spec
+.eggs/
+
+# ------------------------------------------
+# IDE and editor files
+# ------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-*
+
+# ------------------------------------------
+# OS files
+# ------------------------------------------
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ------------------------------------------
+# Testing and coverage
+# ------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.cache/
+
+# ------------------------------------------
+# SALOCOIN blockchain data (user-generated)
+# ------------------------------------------
+data/
+wallets/
+backups/
+.salocoin/
+blocks.dat
+mempool.json
+peers.dat
+pool_state.json
+shares.log
+*.bak
+
+# ------------------------------------------
+# Configuration files with secrets
+# ------------------------------------------
+salocoin.conf
+masternode.conf
+*.pem
+*.key
+
+# ------------------------------------------
+# Logs
+# ------------------------------------------
+*.log
+logs/
+
+# ------------------------------------------
+# Demo and development files (not for release)
+# ------------------------------------------
+demo.py
+demo_data/
+debug_*.py
+test_*.py
+check_*.py
+
+# ------------------------------------------
+# Server deployment scripts (site-specific)
+# ------------------------------------------
+setup-aliases.ps1
+restart_servers.sh
+server_control.sh
+upload_blocks.py
+salocoin-seed.service
+salocoin-bootstrap.service
+nginx-*.conf
+gunicorn_config.py
+
+# ------------------------------------------
+# Desktop GUI apps (separate distribution)
+# ------------------------------------------
+desktop/
+
+# ------------------------------------------
+# Website (separate repo)
+# ------------------------------------------
+website/
+
+# ------------------------------------------
+# Archives
+# ------------------------------------------
+*.zip
+*.tar.gz
+*.rar

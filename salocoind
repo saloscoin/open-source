@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""
+SALOCOIN Daemon (salocoind)
+Full node daemon for SALOCOIN network.
+
+Usage: salocoind <command> [options]
+"""
+
+import sys
+import os
+import argparse
+import json
+import time
+import signal
+import threading
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import config
+from core.blockchain import Blockchain
+from core.transaction import Transaction
+from rpc import RPCServer, RPCMethods
+from core.wallet import WalletManager
+
+# Directories
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+PID_FILE = os.path.join(DATA_DIR, 'salocoind.pid')
+STATUS_FILE = os.path.join(DATA_DIR, 'salocoind.status')
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Local mode by default
+config.DNS_SEEDS = []
+config.SEED_NODES = []
+
+
+class SalocoindDaemon:
+    """SALOCOIN Daemon."""
+    
+    def __init__(self, testnet=False, rpc_port=None):
+        self.testnet = testnet
+        self.running = False
+        self.start_time = 0
+        
+        # Blockchain
+        self.blockchain = Blockchain(data_dir=DATA_DIR)
+        self.blockchain.load()
+        
+        # Validate genesis
+        if not self.blockchain.validate_genesis():
+            print("FATAL: Genesis block validation failed!")
+            print("Network security compromised. Cannot start.")
+            sys.exit(1)
+        
+        # RPC Server
+        self.rpc_port = rpc_port or (config.RPC_TESTNET_PORT if testnet else config.RPC_PORT)
+        self.rpc_server = RPCServer(
+            host="127.0.0.1",
+            port=self.rpc_port,
+            verbose=True,
+        )
+        
+        # Wallet Manager
+        wallets_dir = os.path.join(BASE_DIR, 'wallets')
+        self.wallet_manager = WalletManager(wallets_dir)
+        
+        # RPC Methods - create a minimal version
+        self._register_rpc_methods()
+    
+    def _register_rpc_methods(self):
+        """Register RPC methods."""
+        methods = {
+            'getinfo': self._rpc_getinfo,
+            'getblockchaininfo': self._rpc_getblockchaininfo,
+            'getblockcount': self._rpc_getblockcount,
+            'getbestblockhash': self._rpc_getbestblockhash,
+            'getblock': self._rpc_getblock,
+            'getmempoolinfo': self._rpc_getmempoolinfo,
+            'stop': self._rpc_stop,
+        }
+        self.rpc_server.register_methods(methods)
+    
+    def _rpc_getinfo(self):
+        return {
+            'version': '1.0.0',
+            'protocolversion': 70015,
+            'blocks': self.blockchain.get_height(),
+            'connections': 0,
+            'testnet': self.testnet,
+            'difficulty': self.blockchain.current_difficulty,
+            'keypoolsize': 0,
+        }
+    
+    def _rpc_getblockchaininfo(self):
+        return self.blockchain.get_chain_info()
+    
+    def _rpc_getblockcount(self):
+        return self.blockchain.get_height()
+    
+    def _rpc_getbestblockhash(self):
+        return self.blockchain.get_latest_block().hash
+    
+    def _rpc_getblock(self, blockhash):
+        block = self.blockchain.get_block_by_hash(blockhash)
+        if block:
+            return block.to_dict()
+        return None
+    
+    def _rpc_getmempoolinfo(self):
+        return {
+            'size': len(self.blockchain.mempool.transactions),
+            'bytes': 0,
+        }
+    
+    def _rpc_stop(self):
+        self.stop()
+        return "SALOCOIN daemon stopping"
+    
+    def start(self):
+        """Start the daemon."""
+        if self.running:
+            return
+        
+        self.running = True
+        self.start_time = time.time()
+        
+        # Write PID
+        with open(PID_FILE, 'w') as f:
+            f.write(str(os.getpid()))
+        
+        print(f"""
+╔══════════════════════════════════════════════════════════╗
+║              SALOCOIN Daemon v1.0.0                      ║
+║         Enterprise-Grade Masternode Cryptocurrency       ║
+╠══════════════════════════════════════════════════════════╣
+║  Network: {'Testnet' if self.testnet else 'Mainnet':>45}  ║
+║  RPC Port: {self.rpc_port:>44}  ║
+║  Blockchain Height: {self.blockchain.get_height():>35}  ║
+║  Genesis: {self.blockchain.chain[0].hash[:32]:>45}...  ║
+╚══════════════════════════════════════════════════════════╝
+""")
+        
+        # Update status
+        self._update_status('running')
+        
+        # Start RPC server
+        self.rpc_server.start()
+        
+        print("Daemon started. Press Ctrl+C to stop.\n")
+        
+        # Main loop
+        try:
+            while self.running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        
+        self.stop()
+    
+    def stop(self):
+        """Stop the daemon."""
+        if not self.running:
+            return
+        
+        print("\nStopping daemon...")
+        self.running = False
+        
+        # Stop RPC
+        self.rpc_server.stop()
+        
+        # Save blockchain
+        self.blockchain.save()
+        
+        # Update status
+        self._update_status('stopped')
+        
+        # Remove PID file
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+        
+        print("Daemon stopped.")
+    
+    def _update_status(self, status):
+        data = {
+            'status': status,
+            'pid': os.getpid(),
+            'start_time': self.start_time,
+            'blockchain_height': self.blockchain.get_height(),
+            'rpc_port': self.rpc_port,
+            'testnet': self.testnet,
+        }
+        with open(STATUS_FILE, 'w') as f:
+            json.dump(data, f)
+
+
+def is_running() -> bool:
+    """Check if daemon is running."""
+    if not os.path.exists(PID_FILE):
+        return False
+    
+    try:
+        with open(PID_FILE, 'r') as f:
+            pid = int(f.read().strip())
+        
+        # Check if process exists (Windows compatible)
+        import subprocess
+        result = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'], 
+                              capture_output=True, text=True)
+        return str(pid) in result.stdout
+    except:
+        return False
+
+
+def get_status() -> dict:
+    """Get daemon status."""
+    if os.path.exists(STATUS_FILE):
+        with open(STATUS_FILE, 'r') as f:
+            return json.load(f)
+    return {'status': 'unknown'}
+
+
+def cmd_start(args):
+    """Start the daemon."""
+    if is_running():
+        print("Daemon is already running.")
+        return
+    
+    daemon = SalocoindDaemon(testnet=args.testnet, rpc_port=args.rpcport)
+    
+    signal.signal(signal.SIGINT, lambda s, f: daemon.stop())
+    signal.signal(signal.SIGTERM, lambda s, f: daemon.stop())
+    
+    daemon.start()
+
+
+def cmd_stop(args):
+    """Stop the daemon."""
+    if not is_running():
+        print("Daemon is not running.")
+        return
+    
+    try:
+        from rpc import RPCClient
+        client = RPCClient(port=args.rpcport or config.RPC_PORT)
+        result = client.call('stop')
+        print(result)
+    except:
+        print("Could not connect to daemon.")
+
+
+def cmd_status(args):
+    """Show daemon status."""
+    status = get_status()
+    running = is_running()
+    
+    blockchain = Blockchain(data_dir=DATA_DIR)
+    blockchain.load()
+    
+    print(f"""
+╔══════════════════════════════════════════════════════════╗
+║                   Daemon Status                          ║
+╚══════════════════════════════════════════════════════════╝
+
+Status: {'🟢 Running' if running else '🔴 Stopped'}
+PID: {status.get('pid', 'N/A')}
+Network: {'Testnet' if status.get('testnet') else 'Mainnet'}
+RPC Port: {status.get('rpc_port', config.RPC_PORT)}
+Blockchain Height: {blockchain.get_height()}
+Genesis Hash: {blockchain.chain[0].hash[:32]}...
+""")
+
+
+def cmd_peers(args):
+    """Show connected peers."""
+    print("\n📡 Connected Peers: 0")
+    print("   (Local mode - no network peers)")
+    print("   Configure DNS_SEEDS in config.py for network mode.\n")
+
+
+def cmd_sync(args):
+    """Sync blockchain."""
+    print("\n🔄 Blockchain Sync")
+    print("   Local mode - blockchain is already synced.")
+    print("   Configure peers for network sync.\n")
+
+
+def cmd_info(args):
+    """Show blockchain info and reward schedule."""
+    blockchain = Blockchain(data_dir=DATA_DIR)
+    blockchain.load()
+    
+    height = blockchain.get_height()
+    current_reward = config.calculate_block_reward(height) / config.COIN_UNIT
+    multiplier = config.get_difficulty_multiplier(height)
+    
+    print(f"""
+╔══════════════════════════════════════════════════════════════════════════╗
+║                        SALOCOIN Network Info                             ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+Blockchain Status:
+  Height:           {height}
+  Current Reward:   {current_reward} SALO
+  Difficulty Mult:  {multiplier}x
+  Max Supply:       39,000,000 SALO
+
+═══════════════════════════════════════════════════════════════════════════
+                        REWARD SCHEDULE (Bitcoin-style Halving)
+═══════════════════════════════════════════════════════════════════════════
+""")
+    
+    schedule = config.get_reward_schedule()
+    print(f"{'Block Range':<25} {'Reward':<15} {'Era Coins':<20}")
+    print("-" * 60)
+    
+    for era in schedule:
+        start = era['start_block']
+        end = era['end_block']
+        reward = era['reward_salo']
+        total = era['total_coins']
+        
+        if end == 'infinity':
+            range_str = f"{start:,}+"
+        else:
+            range_str = f"{start:,} - {end:,}"
+        
+        reward_str = f"{reward} SALO"
+        total_str = f"{total:,.0f} SALO" if isinstance(total, float) else total
+        
+        # Mark current era
+        if isinstance(end, int) and start <= height <= end:
+            print(f"{range_str:<25} {reward_str:<15} {total_str:<20} ← CURRENT")
+        elif end == 'infinity' and height >= start:
+            print(f"{range_str:<25} {reward_str:<15} {total_str:<20} ← CURRENT")
+        else:
+            print(f"{range_str:<25} {reward_str:<15} {total_str:<20}")
+    
+    print(f"""
+═══════════════════════════════════════════════════════════════════════════
+                        DIFFICULTY MILESTONES
+═══════════════════════════════════════════════════════════════════════════
+""")
+    print(f"{'Block Height':<20} {'Multiplier':<15} {'Status':<15}")
+    print("-" * 50)
+    
+    for milestone, mult in sorted(config.DIFFICULTY_MILESTONES.items()):
+        status = "✓ ACTIVE" if height >= milestone else "PENDING"
+        milestone_str = f"{milestone:,}"
+        print(f"{milestone_str:<20} {mult}x{'':<13} {status:<15}")
+    
+    print()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='salocoind',
+        description='SALOCOIN Daemon'
+    )
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+    
+    # start
+    p = subparsers.add_parser('start', help='Start daemon')
+    p.add_argument('--testnet', '-t', action='store_true', help='Use testnet')
+    p.add_argument('--rpcport', type=int, help='RPC port')
+    
+    # stop
+    p = subparsers.add_parser('stop', help='Stop daemon')
+    p.add_argument('--rpcport', type=int, help='RPC port')
+    
+    # status
+    subparsers.add_parser('status', help='Show daemon status')
+    
+    # peers
+    subparsers.add_parser('peers', help='Show connected peers')
+    
+    # sync
+    subparsers.add_parser('sync', help='Sync blockchain')
+    
+    # info
+    subparsers.add_parser('info', help='Show blockchain info and reward schedule')
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+    
+    commands = {
+        'start': cmd_start,
+        'stop': cmd_stop,
+        'status': cmd_status,
+        'peers': cmd_peers,
+        'sync': cmd_sync,
+        'info': cmd_info,
+    }
+    
+    commands[args.command](args)
+
+
+if __name__ == '__main__':
+    main()
