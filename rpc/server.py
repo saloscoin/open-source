@@ -8,6 +8,8 @@ import socket
 import threading
 import hashlib
 import base64
+import hmac
+import ipaddress
 import time
 import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -130,7 +132,7 @@ class RPCHandler(BaseHTTPRequestHandler):
                 return False
             
             encoded = auth_header[6:]
-            decoded = base64.b64decode(encoded).decode('utf-8')
+            decoded = base64.b64decode(encoded, validate=True).decode('utf-8')
             username, password = decoded.split(':', 1)
             
             return self.server.rpc_server.check_auth(username, password)
@@ -263,7 +265,17 @@ class RPCServer:
         # Authentication
         self.username = username
         self.password = password
-        self.auth_required = username is not None and password is not None
+        if (username is None) != (password is None):
+            raise ValueError("Both RPC username and password are required")
+        if username is not None and (not username or not password):
+            raise ValueError("RPC credentials must not be empty")
+        self.auth_required = username is not None
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+        if not self.auth_required and not loopback:
+            raise ValueError("Non-loopback RPC requires credentials")
         
         # Methods registry
         self._methods: Dict[str, Callable] = {}
@@ -334,7 +346,11 @@ class RPCServer:
         Returns:
             True if valid
         """
-        return username == self.username and password == self.password
+        if not self.auth_required:
+            return False
+        user_ok = hmac.compare_digest(username.encode(), self.username.encode())
+        password_ok = hmac.compare_digest(password.encode(), self.password.encode())
+        return user_ok and password_ok
     
     def start(self):
         """Start the RPC server."""
@@ -347,7 +363,7 @@ class RPCServer:
         self._server.rpc_server = self
         
         self._running = True
-        self._thread = threading.Thread(target=self._serve)
+        self._thread = threading.Thread(target=self._server.serve_forever)
         self._thread.daemon = True
         self._thread.start()
     

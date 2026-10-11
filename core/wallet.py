@@ -8,6 +8,7 @@ import json
 import time
 import secrets
 import threading
+import tempfile
 from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from threading import Lock, RLock
@@ -144,6 +145,8 @@ class Wallet:
             if mnemonic is None:
                 mnemonic = generate_mnemonic()
             
+            if passphrase:
+                raise NotImplementedError("HD passphrase persistence is unavailable")
             self.mnemonic = mnemonic
             seed = mnemonic_to_seed(mnemonic, passphrase)
             self.master_key = ExtendedKey.from_seed(
@@ -407,39 +410,19 @@ class Wallet:
         Args:
             passphrase: Encryption passphrase
         """
-        # Note: Full implementation would use AES-256-CBC
-        # This is a simplified version
-        if self.encrypted:
-            raise ValueError("Wallet already encrypted")
-        
-        self.encryption_salt = secrets.token_bytes(32)
-        self.encrypted = True
-        self.locked = True
-        self.save()
-    
+        raise NotImplementedError(
+            "Wallet encryption is unavailable; wallet files contain plaintext keys. "
+            "Use encrypted storage and keep backups private."
+        )
+
     def unlock(self, passphrase: str, timeout: int = 60):
-        """
-        Unlock encrypted wallet.
-        
-        Args:
-            passphrase: Encryption passphrase
-            timeout: Seconds to keep unlocked (0 = forever)
-        """
-        if not self.encrypted:
-            return
-        
-        # Note: Full implementation would verify passphrase
-        self.locked = False
-        
-        if timeout > 0:
-            import threading
-            def lock_wallet():
-                time.sleep(timeout)
-                self.locked = True
-            
-            t = threading.Thread(target=lock_wallet, daemon=True)
-            t.start()
-    
+        """Refuse to pretend that legacy encryption flags verify a password."""
+        if self.encrypted:
+            raise NotImplementedError(
+                "Legacy encrypted wallets contain plaintext keys and cannot securely "
+                "verify a password. Preserve the file for offline recovery."
+            )
+
     def lock(self):
         """Lock the wallet."""
         self.locked = True
@@ -448,6 +431,8 @@ class Wallet:
         """Save wallet to file."""
         if not self.filepath:
             return
+        if self.encrypted:
+            raise ValueError("Refusing to overwrite a legacy encrypted wallet")
         
         # Ensure directory exists
         os.makedirs(os.path.dirname(self.filepath) or '.', exist_ok=True)
@@ -466,8 +451,17 @@ class Wallet:
         if self.mnemonic and not self.encrypted:
             data['mnemonic'] = self.mnemonic
         
-        with open(self.filepath, 'w') as f:
-            json.dump(data, f, indent=2)
+        fd, temporary = tempfile.mkstemp(
+            prefix='.wallet-', dir=os.path.dirname(self.filepath) or '.')
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, self.filepath)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     
     def load(self) -> bool:
         """Load wallet from file."""

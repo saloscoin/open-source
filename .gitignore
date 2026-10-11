@@ -124,3 +124,7 @@ website/
 *.zip
 *.tar.gz
 *.rar
+
+# Disposable development data
+development-data/
+.wallet-*

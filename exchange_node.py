@@ -792,10 +792,12 @@ class ExchangeNode:
         p2p_port: int = DEFAULT_P2P_PORT,
         rpc_port: int = DEFAULT_RPC_PORT,
         api_port: int = DEFAULT_API_PORT,
-        rpc_user: str = "rpcuser",
-        rpc_password: str = "rpcpassword",
+        rpc_user: str = None,
+        rpc_password: str = None,
         testnet: bool = False,
     ):
+        if not rpc_user or not rpc_password:
+            raise ValueError("Set explicit RPC credentials; defaults are disabled")
         self.data_dir = data_dir or config.get_data_dir(testnet)
         self.p2p_port = p2p_port
         self.rpc_port = rpc_port
@@ -849,7 +851,7 @@ class ExchangeNode:
         
         # RPC server uses the P2P node
         rpc_server = RPCServer(
-            host='0.0.0.0',
+            host='127.0.0.1',
             port=self.rpc_port,
             username=self.rpc_user,
             password=self.rpc_password,
@@ -883,7 +885,7 @@ class ExchangeNode:
         
         # Start REST API
         print(f"Starting REST API on port {self.api_port}...")
-        api_server = HTTPServer(('0.0.0.0', self.api_port), ExchangeAPIHandler)
+        api_server = HTTPServer(('127.0.0.1', self.api_port), ExchangeAPIHandler)
         api_thread = threading.Thread(target=api_server.serve_forever)
         api_thread.daemon = True
         api_thread.start()
@@ -909,7 +911,7 @@ class ExchangeNode:
         print(f"   Health:    http://localhost:{self.api_port}/health")
         print(f"   Status:    http://localhost:{self.api_port}/status")
         print(f"   Info:      http://localhost:{self.api_port}/info")
-        print(f"   RPC:       http://{self.rpc_user}:{self.rpc_password}@localhost:{self.rpc_port}/\n")
+        print(f"   RPC:       http://localhost:{self.rpc_port}/\n")
         
         is_synced = True  # Will be updated by sync monitor
     
@@ -995,8 +997,8 @@ def main():
     parser.add_argument('--api-port', type=int, default=DEFAULT_API_PORT, help=f'API port (default: {DEFAULT_API_PORT})')
     
     # RPC options
-    parser.add_argument('--rpcuser', type=str, default='rpcuser', help='RPC username')
-    parser.add_argument('--rpcpassword', type=str, default='rpcpassword', help='RPC password')
+    parser.add_argument('--rpcuser', type=str, default=os.environ.get('SALO_RPC_USER'), help='RPC username')
+    parser.add_argument('--rpcpassword', type=str, default=os.environ.get('SALO_RPC_PASSWORD'), help='RPC password')
     
     # Other options
     parser.add_argument('--daemon', action='store_true', help='Run as daemon')
