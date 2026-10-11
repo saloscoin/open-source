@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible problem using disposable data.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: "For vulnerabilities, follow SECURITY.md. Never include private keys, mnemonics, wallet files, RPC passwords or personal details."
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, repository commit and entry point.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Use a clean checkout and disposable local data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized error output
+      description: Remove secrets and personal information before posting.
+      render: text

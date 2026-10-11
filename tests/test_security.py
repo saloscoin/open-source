@@ -5,7 +5,6 @@ import threading
 import urllib.error
 import urllib.request
 from http.server import HTTPServer
-from types import SimpleNamespace
 
 import pytest
 

@@ -128,3 +128,7 @@ website/
 # Disposable development data
 development-data/
 .wallet-*
+
+# Regression tests and runnable examples belong in source control.
+!tests/test_*.py
+!scripts/check_docs.py
